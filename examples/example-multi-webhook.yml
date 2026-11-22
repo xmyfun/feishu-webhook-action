@@ -1,0 +1,19 @@
+# Multi-target webhooks: one target per line in the secret, each with an optional signing secret.
+# Example value for FEISHU_WEBHOOKS:
+#   https://open.feishu.cn/open-apis/bot/v2/hook/aaaaaaaa
+#   https://open.feishu.cn/open-apis/bot/v2/hook/bbbbbbbb|per-target signing secret
+name: example-multi-webhook
+
+on:
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: xmyfun/feishu-webhook-action@v0.1.0
+        with:
+          webhooks: ${{ secrets.FEISHU_WEBHOOKS }}
+          title: "Deployment finished"
+          status: success
+          content: "**Repository**: ${{ github.repository }}"

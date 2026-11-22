@@ -1,0 +1,45 @@
+# Self-check: dry-run validates the assembly logic without sending to any real bot.
+# Trigger manually: Actions → Test → Run workflow.
+name: Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Simple mode markdown card (dry run)
+        uses: ./
+        with:
+          webhook_url: "https://example.invalid/hook"
+          title: "❌ CI failed"
+          status: failure
+          content: "**Failed job**: test"
+          dry_run: "true"
+
+      - name: Passthrough raw card (dry run)
+        uses: ./
+        with:
+          webhook_url: "https://example.invalid/hook"
+          card_json: |
+            {
+              "header": {
+                "title": {"tag": "plain_text", "content": "Release finished"},
+                "template": "green"
+              },
+              "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": "**Version**: 0.1.20"}}
+              ]
+            }
+          dry_run: "true"
+
+      - name: Plain text mode (dry run)
+        uses: ./
+        with:
+          webhook_url: "https://example.invalid/hook"
+          msg_type: text
+          content: "Build finished"
+          dry_run: "true"

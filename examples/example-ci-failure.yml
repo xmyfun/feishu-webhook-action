@@ -1,0 +1,19 @@
+# CI failure notification: simple-mode markdown card, pushed on failure
+name: example-ci-failure
+
+on:
+  workflow_dispatch:
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: xmyfun/feishu-webhook-action@v0.1.0
+        with:
+          webhooks: ${{ secrets.FEISHU_WEBHOOKS }}
+          title: "❌ CI failed"
+          status: failure
+          content: |
+            **Workflow**: ${{ github.workflow }}
+            **Failed job**: test
+            **Ref**: ${{ github.ref_name }}
