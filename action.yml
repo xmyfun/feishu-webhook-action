@@ -1,69 +1,108 @@
 name: feishu-webhook-action
 description: >-
   Generic Feishu (Lark) custom-bot notification: multi-target webhooks, per-target
-  signing, simple cards and raw card JSON passthrough, with an optional GitHub run
-  context appended. Python 3 standard library, zero dependencies, no build step.
+  signing, text or interactive-card messages, with an optional GitHub run context.
+  Field names follow the Feishu custom-bot request body. Python 3 standard library,
+  zero dependencies, no build step.
+
 branding:
   icon: bell
   color: blue
 
+# Interface frozen at v1. Adding inputs/outputs later is allowed; renaming or
+# changing semantics of the ones below is not (that would need a v2).
 inputs:
+  webhook:
+    description: >-
+      Single webhook URL, used when `webhooks` is empty. Ignored when `webhooks`
+      is set.
+    required: false
   webhooks:
     description: >-
-      Multi-line webhook targets, one per line. Each line is a hook URL or
-      `url|signing-secret`. Takes precedence over webhook_url.
-    required: false
-  webhook_url:
-    description: Single webhook URL, used as fallback when webhooks is empty.
+      Multi-target webhooks, one per line. Each line is `url` or `url|secret`.
+      Neither the URL nor the secret may contain `|`. Takes precedence over
+      `webhook`.
     required: false
   webhook_secret:
-    description: Single-target signing secret, paired with webhook_url.
+    description: >-
+      Global default signing secret. Applies to every target that carries no
+      per-line `url|secret`. Leave empty for bots without signature verification.
     required: false
   msg_type:
-    description: "Simple-mode message type: text (plain text) / markdown (default, interactive card markdown)."
+    description: >-
+      Feishu message type: `interactive` (card) or `text`. `post` is not supported.
     required: false
-    default: markdown
+    default: interactive
   title:
-    description: Card title (used by the simple-mode interactive card).
+    description: >-
+      Card header title (`header.title`), plain text. Only used when `msg_type`
+      is interactive and `card` is not given; ignored in text mode.
     required: false
   content:
-    description: "Simple-mode body: plain text or markdown content."
-    required: false
-  card_json:
     description: >-
-      Passthrough mode: a complete Feishu card object as JSON. When set, the
-      simple-mode title / content / msg_type / extra_elements / include_context
-      inputs are ignored; the action only handles signing and transport.
+      Message body: lark_md markdown in interactive mode, plain text in text
+      mode. Maps to `card.elements[0]` / `content.text`.
     required: false
-  status:
-    description: "Run status: success / failure / cancelled / skipped, used to map the card color template."
+  card:
+    description: >-
+      Complete Feishu card object as JSON, sent as-is. Only valid with
+      `msg_type=interactive`, and cannot be combined with `title`, `template` or
+      `extra_elements`.
     required: false
   template:
-    description: Card color template (e.g. green / red / blue / grey); overrides the status mapping.
+    description: >-
+      Card header colour (`header.template`). One of blue, wathet, turquoise,
+      green, yellow, orange, red, carmine, violet, purple, indigo, grey.
+      Invalid values fall back to blue with a warning.
+    required: false
+  status:
+    description: >-
+      Job result used to pick the card colour when `template` is empty:
+      success -> green, failure -> red, cancelled / skipped -> grey.
     required: false
   include_context:
-    description: Whether to append the GitHub context (repository, ref, commit, event, run link) to the simple-mode card.
+    description: >-
+      Append the GitHub run context (repository, ref, commit, event, run link).
+      Ignored when `card` is supplied.
     required: false
     default: "true"
   extra_elements:
-    description: JSON array of extra elements (e.g. buttons) appended to the simple-mode card elements.
+    description: >-
+      JSON array of extra card elements appended after the body and the context.
+      Ignored when `card` is supplied.
     required: false
+  timeout:
+    description: HTTP timeout for a single attempt, in seconds.
+    required: false
+    default: "15"
+  retries:
+    description: >-
+      Extra attempts after a network failure, HTTP 429 or 5xx. Other failures
+      are not retried.
+    required: false
+    default: "0"
   dry_run:
-    description: Print the request body only; do not actually send the webhook.
+    description: >-
+      Print the request body and skip sending. `body` output then carries the
+      body for assertions; `sent` stays 0.
     required: false
     default: "false"
   fail_on_error:
-    description: Exit non-zero when any target fails (default false; notification failures do not block the CI).
+    description: >-
+      Fail the step when any target fails. Default false: failures are
+      reported as warnings and do not block the workflow.
     required: false
     default: "false"
 
 outputs:
-  status:
-    description: success (all sent or skipped) / failure (at least one target failed) / skipped (no webhook configured).
+  result:
+    description: "success (all targets sent, or dry_run/skipped) / failure (at least one target failed)."
   sent:
-    description: Number of targets that sent successfully.
+    description: Number of targets sent successfully (0 in dry_run and when skipped).
   failed:
     description: Number of targets that failed to send.
+  body:
+    description: Request body JSON, set only when dry_run=true.
 
 runs:
   using: composite
@@ -71,17 +110,19 @@ runs:
     - name: Send Feishu notification
       shell: bash
       env:
+        INPUT_WEBHOOK: ${{ inputs.webhook }}
         INPUT_WEBHOOKS: ${{ inputs.webhooks }}
-        INPUT_WEBHOOK_URL: ${{ inputs.webhook_url }}
         INPUT_WEBHOOK_SECRET: ${{ inputs.webhook_secret }}
         INPUT_MSG_TYPE: ${{ inputs.msg_type }}
         INPUT_TITLE: ${{ inputs.title }}
         INPUT_CONTENT: ${{ inputs.content }}
-        INPUT_CARD_JSON: ${{ inputs.card_json }}
-        INPUT_STATUS: ${{ inputs.status }}
+        INPUT_CARD: ${{ inputs.card }}
         INPUT_TEMPLATE: ${{ inputs.template }}
+        INPUT_STATUS: ${{ inputs.status }}
         INPUT_INCLUDE_CONTEXT: ${{ inputs.include_context }}
         INPUT_EXTRA_ELEMENTS: ${{ inputs.extra_elements }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
+        INPUT_RETRIES: ${{ inputs.retries }}
         INPUT_DRY_RUN: ${{ inputs.dry_run }}
         INPUT_FAIL_ON_ERROR: ${{ inputs.fail_on_error }}
       run: python3 "$GITHUB_ACTION_PATH/notify.py"

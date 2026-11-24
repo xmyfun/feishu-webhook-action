@@ -8,10 +8,11 @@ jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - uses: xmyfun/feishu-webhook-action@v0.1.0
+      - uses: xmyfun/feishu-webhook-action@v1
         with:
-          webhook_url: ${{ secrets.FEISHU_WEBHOOK }}
-          card_json: |
+          webhook: ${{ secrets.FEISHU_WEBHOOK }}
+          include_context: "false"
+          card: |
             {
               "header": {
                 "title": {"tag": "plain_text", "content": "Release finished"},

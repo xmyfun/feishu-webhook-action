@@ -1,45 +1,85 @@
-# Self-check: dry-run validates the assembly logic without sending to any real bot.
-# Trigger manually: Actions → Test → Run workflow.
+# Interface gate for v1: every push / PR must keep the frozen contract intact.
+#  - unit: signature golden vector, target parsing, card assembly, fail-fast rules
+#  - runner matrix: dry-run through the composite action on Linux / macOS / Windows
+#    to keep the documented "python3 is preinstalled" promise honest.
 name: Test
 
 on:
+  push:
+  pull_request:
   workflow_dispatch:
 
 jobs:
-  dry-run:
+  unit:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 is the oldest CPython with an ubuntu-26.04 build in setup-python's
+        # manifest (3.9 is EOL); 3.14 is the newest. Together they bracket the
+        # range a runner's preinstalled python3 can fall into.
+        python-version: ["3.10", "3.14"]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Byte-compile check
+        run: python3 -m compileall -q notify.py tests
 
-      - name: Simple mode markdown card (dry run)
+  dry-run:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Interactive card (dry run)
         uses: ./
         with:
-          webhook_url: "https://example.invalid/hook"
-          title: "❌ CI failed"
+          webhook: "https://example.invalid/hook"
+          title: "YMK CI · dry run"
           status: failure
           content: "**Failed job**: test"
+          extra_elements: '[{"tag": "hr"}]'
           dry_run: "true"
 
-      - name: Passthrough raw card (dry run)
+      - name: Complete card passthrough (dry run)
         uses: ./
         with:
-          webhook_url: "https://example.invalid/hook"
-          card_json: |
+          webhook: "https://example.invalid/hook"
+          card: |
             {
               "header": {
                 "title": {"tag": "plain_text", "content": "Release finished"},
                 "template": "green"
               },
               "elements": [
-                {"tag": "div", "text": {"tag": "lark_md", "content": "**Version**: 0.1.20"}}
+                {"tag": "div", "text": {"tag": "lark_md", "content": "**Version**: 1.0.0"}}
               ]
             }
+          include_context: "false"
           dry_run: "true"
 
       - name: Plain text mode (dry run)
         uses: ./
         with:
-          webhook_url: "https://example.invalid/hook"
+          webhook: "https://example.invalid/hook"
           msg_type: text
           content: "Build finished"
+          include_context: "false"
+          dry_run: "true"
+
+      - name: Multi-target with global secret (dry run)
+        uses: ./
+        with:
+          webhooks: |
+            https://example.invalid/a
+            https://example.invalid/b|line-secret
+          webhook_secret: global-secret
+          title: "two targets"
           dry_run: "true"

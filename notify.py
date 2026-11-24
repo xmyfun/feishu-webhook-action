@@ -1,67 +1,168 @@
 #!/usr/bin/env python3
 """Feishu (Lark) custom-bot webhook sender for GitHub Actions.
 
-Zero-dependency: Python 3 standard library only (hmac, hashlib, base64, json,
-urllib, time, os, sys, copy, re). No package install, no build step.
+Zero-dependency: Python 3 standard library only. No package install, no build step.
 
-Modes
------
-- Simple card: give ``title`` + ``content`` (markdown); this action assembles the
-  interactive card, optionally appends GitHub context and extra elements.
-- Raw card: give ``card_json`` (a complete ``card`` object); the action sends it
-  as-is, only handling signature and transport.
+Interface (v1, frozen — see README):
+  Transport:  webhook / webhooks / webhook_secret / timeout / retries
+  Content:    msg_type (text|interactive) / title / content / card
+              template / status / include_context / extra_elements
+  Behaviour:  dry_run / fail_on_error
+  Outputs:    result / sent / failed / body
 
-Webhook targets
----------------
-- ``webhooks``: multi-line, one target per line; each line is ``url`` or
-  ``url|secret`` (per-target signing secret).
-- Fallback: ``webhook_url`` + ``webhook_secret`` for a single target.
-
-One target failing does not fail the action by default; set ``fail_on_error``
-to "true" to propagate failures.
+Field names follow the Feishu custom-bot request body (`msg_type`, `content`,
+`card`, `header.template`) so a reader of the Feishu docs needs no translation
+table; transport-level names follow the common GitHub Action conventions
+(`webhook`, `webhooks`, `fail_on_error`, `dry_run`, `timeout`).
 """
 
+from __future__ import annotations
+
+import base64
 import copy
 import hashlib
 import hmac
-import base64
 import json
 import os
 import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.request
+
+# Feishu card header colours accepted by the custom-bot API.
+TEMPLATES = (
+    "blue", "wathet", "turquoise", "green", "yellow", "orange",
+    "red", "carmine", "violet", "purple", "indigo", "grey",
+)
+STATUS_TEMPLATE = {
+    "success": "green",
+    "failure": "red",
+    "cancelled": "grey",
+    "skipped": "grey",
+}
+TITLE_LIMIT = 40
+MAX_BODY_BYTES = 20_000
+
+
+class ActionError(Exception):
+    """Invalid input: fail the step immediately with a clear message."""
 
 
 def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
-def parse_targets() -> list[tuple[str, str]]:
-    """Parse webhook targets from the multi-line input, then single-value fallback."""
+def flag(name: str, default: str = "false") -> bool:
+    # An explicitly empty input falls back to the default (GitHub passes "" when
+    # a `with:` entry is omitted for a composite action's optional input).
+    raw = env(name) or default
+    return raw.lower() in ("true", "1", "yes")
+
+
+def warn(message: str) -> None:
+    print(f"::warning::{message}")
+
+
+# --------------------------------------------------------------------------- transport
+
+
+def parse_targets(webhooks: str, webhook: str, secret: str) -> list[tuple[str, str]]:
+    """Parse targets: multi-line `webhooks` wins, `webhook` is the fallback.
+
+    Each line is `url` or `url|secret`. `secret` is the global default signing
+    secret and applies to every line that carries no per-line secret.
+    """
     targets: list[tuple[str, str]] = []
-    for line in env("INPUT_WEBHOOKS").splitlines():
+    for line in webhooks.splitlines():
         line = line.strip()
         if not line:
             continue
-        url, _, secret = line.partition("|")
-        url, secret = url.strip(), secret.strip()
+        url, _, line_secret = line.partition("|")
+        url, line_secret = url.strip(), line_secret.strip()
         if url:
-            targets.append((url, secret))
-    if not targets:
-        url = env("INPUT_WEBHOOK_URL")
-        if url:
-            targets.append((url, env("INPUT_WEBHOOK_SECRET")))
+            targets.append((url, line_secret or secret))
+    if not targets and webhook:
+        targets.append((webhook, secret))
     return targets
 
 
-def status_template(status: str) -> str:
-    return {
-        "success": "green",
-        "failure": "red",
-        "cancelled": "grey",
-        "skipped": "grey",
-    }.get(status, "default")
+def sign(body: dict, secret: str, timestamp: int | None = None) -> dict:
+    """Attach a Feishu signature.
+
+    sign = base64(HMAC-SHA256(key = timestamp + "\\n" + secret, msg = "")).
+    `timestamp` / `sign` go into the request body, never into the URL.
+    """
+    if not secret:
+        return body
+    ts = str(int(time.time()) if timestamp is None else timestamp)
+    digest = hmac.new(f"{ts}\n{secret}".encode(), b"", hashlib.sha256).digest()
+    signed = copy.deepcopy(body)
+    signed["timestamp"] = ts
+    signed["sign"] = base64.b64encode(digest).decode()
+    return signed
+
+
+def parse_response(raw: str) -> tuple[bool, str]:
+    """Feishu reports errors as HTTP 200 + {"code": <non-zero>}; check the code."""
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        return False, f"non-JSON response: {raw[:200]}"
+    code = payload.get("code", payload.get("StatusCode"))
+    if code in (0, None, ""):
+        return True, raw
+    return False, f"code={code} msg={payload.get('msg', '')} body={raw[:200]}"
+
+
+def send(
+    url: str,
+    body: dict,
+    dry_run: bool = False,
+    timeout: int = 15,
+    retries: int = 0,
+) -> tuple[bool, str]:
+    """POST one payload; retry only network failures, 429 and 5xx."""
+    data = json.dumps(body, ensure_ascii=False).encode()
+    if dry_run:
+        print("=== dry_run request body (not sent) ===")
+        print(json.dumps(body, ensure_ascii=False, indent=2))
+        return True, "dry_run"
+
+    attempts = max(0, retries) + 1
+    last_error = "no attempt made"
+    for attempt in range(attempts):
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8", errors="replace")
+                http_status = resp.status
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            http_status = exc.code
+        except urllib.error.URLError as exc:
+            last_error = f"URLError: {exc}"
+            if attempt + 1 < attempts:
+                time.sleep(2 ** attempt)
+                continue
+            return False, last_error
+        except Exception as exc:  # noqa: BLE001 - report any send failure, keep going
+            return False, f"{type(exc).__name__}: {exc}"
+
+        ok, detail = parse_response(raw)
+        if ok:
+            return True, raw
+        last_error = detail
+        retryable = http_status == 429 or 500 <= http_status < 600
+        if retryable and attempt + 1 < attempts:
+            time.sleep(2 ** attempt)
+            continue
+        return False, detail
+    return False, last_error
+
+
+# ---------------------------------------------------------------------------- content
 
 
 def short_sha(sha: str) -> str:
@@ -69,7 +170,7 @@ def short_sha(sha: str) -> str:
 
 
 def context_markdown() -> str:
-    """Assemble GitHub context lines as lark_md; empty when run outside Actions."""
+    """GitHub run context as lark_md; empty when run outside Actions."""
     repo = env("GITHUB_REPOSITORY")
     ref = env("GITHUB_REF_NAME")
     sha = env("GITHUB_SHA")
@@ -89,145 +190,216 @@ def context_markdown() -> str:
     return "\n".join(parts)
 
 
-def load_extra_elements() -> list:
-    raw = env("INPUT_EXTRA_ELEMENTS")
+def parse_extra_elements(raw: str) -> list:
     if not raw:
         return []
     try:
         data = json.loads(raw)
-        if isinstance(data, list):
-            return data
-        print("::warning::extra_elements is not an array; ignored")
-        return []
     except json.JSONDecodeError as exc:
-        print(f"::warning::failed to parse extra_elements JSON; ignored: {exc}")
+        warn(f"extra_elements is not valid JSON, ignored: {exc}")
         return []
+    if not isinstance(data, list):
+        warn("extra_elements must be a JSON array, ignored")
+        return []
+    return data
 
 
-def build_simple_body() -> dict:
-    msg_type = env("INPUT_MSG_TYPE", "markdown").lower()
-    content = env("INPUT_CONTENT")
+def resolve_template(raw_template: str, status: str) -> str:
+    if raw_template:
+        if raw_template in TEMPLATES:
+            return raw_template
+        warn(
+            f"template '{raw_template}' is not a Feishu card colour; "
+            f"falling back to blue (allowed: {', '.join(TEMPLATES)})"
+        )
+        return "blue"
+    return STATUS_TEMPLATE.get(status.lower(), "blue")
+
+
+def truncate_title(title: str) -> str:
+    if len(title) <= TITLE_LIMIT:
+        return title
+    warn(f"title longer than {TITLE_LIMIT} characters, truncated for the card header")
+    return title[: TITLE_LIMIT - 1] + "…"
+
+
+def build_body() -> dict:
+    """Assemble the Feishu request body from the inputs.
+
+    Raises ActionError on invalid input combinations (no silent ignoring).
+    """
+    msg_type = env("INPUT_MSG_TYPE", "interactive").lower() or "interactive"
+    if msg_type == "post":
+        raise ActionError(
+            "msg_type=post is not supported by this action; "
+            "use msg_type=interactive with content, or msg_type=text"
+        )
+    if msg_type not in ("text", "interactive"):
+        raise ActionError(f"msg_type must be text or interactive, got '{msg_type}'")
+
     title = env("INPUT_TITLE")
+    content = env("INPUT_CONTENT")
+    card_raw = env("INPUT_CARD")
+
+    if card_raw:
+        if msg_type != "interactive":
+            raise ActionError("card can only be used with msg_type=interactive")
+        if title or env("INPUT_TEMPLATE") or env("INPUT_EXTRA_ELEMENTS"):
+            raise ActionError(
+                "card is a complete card object: title / template / extra_elements "
+                "cannot be combined with it"
+            )
+        if flag("INPUT_INCLUDE_CONTEXT", "true"):
+            warn(
+                "include_context is ignored when a complete card is supplied; "
+                "append the context to the card yourself or set include_context=false"
+            )
+        try:
+            card = json.loads(card_raw)
+        except json.JSONDecodeError as exc:
+            raise ActionError(f"card is not valid JSON: {exc}") from exc
+        if not isinstance(card, dict):
+            raise ActionError("card must be a JSON object (a complete Feishu card)")
+        body = {"msg_type": "interactive", "card": card}
+        if len(json.dumps(body, ensure_ascii=False).encode()) > MAX_BODY_BYTES:
+            raise ActionError(f"card request body exceeds {MAX_BODY_BYTES} bytes")
+        return body
 
     if msg_type == "text":
         text = content
-        if env("INPUT_INCLUDE_CONTEXT", "true").lower() not in ("false", "0", "no"):
+        if flag("INPUT_INCLUDE_CONTEXT", "true"):
             ctx = context_markdown()
             if ctx:
                 text = f"{text}\n\n{ctx}" if text else ctx
-        return {"msg_type": "text", "content": {"text": text}}
+        if not text:
+            raise ActionError("msg_type=text needs content (or GitHub context)")
+        body = {"msg_type": "text", "content": {"text": text}}
+        if len(json.dumps(body, ensure_ascii=False).encode()) > MAX_BODY_BYTES:
+            raise ActionError(f"text request body exceeds {MAX_BODY_BYTES} bytes")
+        return body
 
-    # markdown / interactive → interactive card
+    # interactive: assemble a card. Element order is part of the contract:
+    # [content, context, extra...]
     elements: list = []
     if content:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": content}})
-    if env("INPUT_INCLUDE_CONTEXT", "true").lower() not in ("false", "0", "no"):
+    if flag("INPUT_INCLUDE_CONTEXT", "true"):
         ctx = context_markdown()
         if ctx:
             elements.append({"tag": "div", "text": {"tag": "lark_md", "content": ctx}})
-    elements.extend(load_extra_elements())
+    elements.extend(parse_extra_elements(env("INPUT_EXTRA_ELEMENTS")))
 
-    template = env("INPUT_TEMPLATE") or status_template(env("INPUT_STATUS"))
-    card: dict = {"header": {"template": template}, "elements": elements}
+    if not title and not elements:
+        raise ActionError(
+            "msg_type=interactive needs at least one of title / content / "
+            "extra_elements (or GitHub context)"
+        )
+
+    header = {"template": resolve_template(env("INPUT_TEMPLATE"), env("INPUT_STATUS"))}
     if title:
-        card["header"]["title"] = {"tag": "plain_text", "content": title}
-    return {"msg_type": "interactive", "card": card}
+        header["title"] = {"tag": "plain_text", "content": truncate_title(title)}
+    body = {"msg_type": "interactive", "card": {"header": header, "elements": elements}}
+    return fit_body_size(body)
 
 
-def build_raw_body() -> dict | None:
-    raw = env("INPUT_CARD_JSON")
-    if not raw:
-        return None
-    try:
-        card = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        print(f"::error::card_json is not valid JSON: {exc}")
-        sys.exit(1)
-    if not isinstance(card, dict):
-        print("::error::card_json must be an object (a complete card structure)")
-        sys.exit(1)
-    return {"msg_type": "interactive", "card": card}
+def fit_body_size(body: dict) -> dict:
+    """Shrink the longest lark_md block until the request fits Feishu's limit."""
+    while len(json.dumps(body, ensure_ascii=False).encode()) > MAX_BODY_BYTES:
+        blocks = [
+            element["text"]
+            for element in body["card"]["elements"]
+            if element.get("tag") == "div" and element.get("text", {}).get("tag") == "lark_md"
+        ]
+        if not blocks:
+            raise ActionError(f"request body exceeds {MAX_BODY_BYTES} bytes and cannot be shrunk")
+        longest = max(blocks, key=lambda block: len(block.get("content", "")))
+        text = longest.get("content", "")
+        if len(text) <= 1:
+            raise ActionError(f"request body exceeds {MAX_BODY_BYTES} bytes and cannot be shrunk")
+        warn(f"request body exceeds {MAX_BODY_BYTES} bytes, content truncated")
+        longest["content"] = text[: max(1, int(len(text) * 0.8) - 1)] + "…"
+    return body
 
 
-def sign(body: dict, secret: str) -> dict:
-    """Attach Feishu signature: HMAC-SHA256 of \"timestamp\\nsecret\" over empty
-    message, Base64 encoded. Per official custom-bot spec."""
-    if not secret:
-        return body
-    ts = str(int(time.time()))
-    digest = hmac.new(f"{ts}\n{secret}".encode(), b"", hashlib.sha256).digest()
-    signed = copy.deepcopy(body)
-    signed["timestamp"] = ts
-    signed["sign"] = base64.b64encode(digest).decode()
-    return signed
+# ----------------------------------------------------------------------------- outputs
 
 
-def send(url: str, body: dict, dry_run: bool) -> tuple[bool, str]:
-    if dry_run:
-        print("=== dry_run request body ===")
-        print(json.dumps(body, ensure_ascii=False, indent=2))
-        return True, "dry_run"
-    data = json.dumps(body, ensure_ascii=False).encode()
-    req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
-    except urllib.error.URLError as exc:
-        return False, f"URLError: {exc}"
-    except Exception as exc:  # noqa: BLE001 - report any send failure, keep going
-        return False, f"{type(exc).__name__}: {exc}"
-    try:
-        payload = json.loads(raw) if raw.strip() else {}
-    except json.JSONDecodeError:
-        return False, f"non-JSON response: {raw[:200]}"
-    code = payload.get("code", payload.get("StatusCode", 0))
-    if code == 0:
-        return True, raw
-    return False, f"code={code} msg={payload.get('msg', '')} body={raw[:200]}"
-
-
-def write_outputs(status: str, sent: int, failed: int) -> None:
-    gh_output = os.environ.get("GITHUB_OUTPUT")
-    if not gh_output:
+def write_outputs(result: str, sent: int, failed: int, body: str = "") -> None:
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
         return
-    with open(gh_output, "a", encoding="utf-8") as fh:
-        fh.write(f"status={status}\nsent={sent}\nfailed={failed}\n")
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(f"result={result}\nsent={sent}\nfailed={failed}\n")
+        if body:
+            fh.write("body<<__FEISHU_BODY_EOF__\n")
+            fh.write(body + "\n")
+            fh.write("__FEISHU_BODY_EOF__\n")
 
 
-def main() -> int:
-    targets = parse_targets()
+# -------------------------------------------------------------------------------- main
+
+
+def run() -> int:
+    targets = parse_targets(
+        env("INPUT_WEBHOOKS"), env("INPUT_WEBHOOK"), env("INPUT_WEBHOOK_SECRET")
+    )
     if not targets:
-        print("No webhook configured (webhooks / webhook_url are both empty); skipping Feishu notification")
+        print(
+            "No webhook configured (webhooks / webhook are both empty); "
+            "skipping Feishu notification"
+        )
         write_outputs("skipped", 0, 0)
         return 0
 
-    body = build_raw_body() or build_simple_body()
-    dry_run = env("INPUT_DRY_RUN", "false").lower() in ("true", "1", "yes")
-    fail_on_error = env("INPUT_FAIL_ON_ERROR", "false").lower() in ("true", "1", "yes")
+    body = build_body()
+    body_json = json.dumps(body, ensure_ascii=False)
+    dry_run = flag("INPUT_DRY_RUN")
+    fail_on_error = flag("INPUT_FAIL_ON_ERROR")
+    timeout = int(env("INPUT_TIMEOUT", "15") or 15)
+    retries = int(env("INPUT_RETRIES", "0") or 0)
+    if timeout <= 0:
+        raise ActionError("timeout must be a positive number of seconds")
+    if retries < 0:
+        raise ActionError("retries must be >= 0")
+
+    unsigned = [idx for idx, (_, secret) in enumerate(targets) if not secret]
+    if unsigned and not dry_run:
+        warn(
+            f"{len(unsigned)} target(s) have no signing secret; if the bot has "
+            "signature verification enabled, Feishu will reject them (code 19021)"
+        )
 
     sent = 0
     failed = 0
-    responses: list[str] = []
     for idx, (url, secret) in enumerate(targets):
-        signed = sign(body, secret)
-        ok, detail = send(url, signed, dry_run)
+        ok, detail = send(url, sign(body, secret), dry_run, timeout, retries)
         if ok:
-            sent += 1
-            print(f"[{idx}] sent successfully")
+            if dry_run:
+                print(f"[{idx}] dry_run ok")
+            else:
+                sent += 1
+                print(f"[{idx}] sent successfully")
         else:
             failed += 1
-            print(f"[{idx}] send failed (non-blocking): {detail}")
-        responses.append(detail)
+            print(f"::warning::[{idx}] send failed (non-blocking): {detail}")
 
-    status = "success" if failed == 0 else "failure"
-    write_outputs(status, sent, failed)
-    print(f"=== summary: {sent} succeeded, {failed} failed ===")
+    result = "success" if failed == 0 else "failure"
+    write_outputs(result, sent, failed, body_json if dry_run else "")
+    print(f"=== summary: {sent} succeeded, {failed} failed, result={result} ===")
 
-    if failed > 0 and fail_on_error:
+    if failed and fail_on_error:
+        print(f"::error::{failed} target(s) failed and fail_on_error is enabled")
         return 1
     return 0
+
+
+def main() -> int:
+    try:
+        return run()
+    except ActionError as exc:
+        print(f"::error::{exc}")
+        write_outputs("failure", 0, 0)
+        return 1
 
 
 if __name__ == "__main__":

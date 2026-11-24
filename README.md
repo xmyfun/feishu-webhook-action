@@ -1,73 +1,73 @@
 # feishu-webhook-action
 
-[简体中文](README.zh-CN.md) · English
+English · [简体中文](README.zh-CN.md)
 
-Generic Feishu (Lark) custom-bot GitHub Action: push one notification to one or more group bots, with per-target signing, simple cards and raw card JSON passthrough, and an optional GitHub run context appended.
+Generic Feishu (Lark) custom-bot GitHub Action: push one notification to one or more group bots, with per-target signing, plain text or interactive cards, and an optional GitHub run context.
 
-- **Multi-target webhooks**: configure one secret with one bot per line; each target is sent separately.
-- **Per-target signing**: each line is `url|secret`; the HMAC-SHA256 signature follows the official Feishu spec.
-- **Two assembly modes**: simple mode takes a title and body and the action wraps the card skeleton; passthrough mode sends a complete card JSON as-is.
-- **Automatic context**: repository, ref, commit, triggering event and run link are appended by default.
-- **Zero dependencies**: implemented with the Python 3 standard library; no third-party packages, no build artifacts.
-- **Non-blocking notifications**: a single target failure only logs; the action does not fail by default.
+- **Multi-target webhooks**: one secret, one bot per line; each target is sent separately.
+- **Signing**: a global default secret plus per-line `url|secret` overrides; the algorithm follows the official Feishu spec.
+- **Two message types**: `msg_type: interactive` (a card, either assembled from a title and body or passed through as a complete `card` object) and `msg_type: text`.
+- **Automatic context**: repository, ref, commit, triggering event and run link, appended by default.
+- **Zero dependencies**: Python 3 standard library; no third-party packages, no build artifacts.
+- **Non-blocking by default**: a failed target is reported as `::warning::` and does not fail the step unless `fail_on_error: true`.
+- **Interface frozen at v1**: the “Inputs”, “Outputs” and “Behaviour contract” sections below are the stable surface. Additions are allowed; renames and semantic changes are not.
 
 ## Why Python
 
-This action only does four things: parse webhook targets, assemble the message body, compute the signature, and issue the HTTPS request. Node/TypeScript and Go were considered; Python 3 standard library was chosen for these reasons:
+This action only does four things: parse webhook targets, assemble the message body, compute the signature and issue the HTTPS request. Node/TypeScript and Go were considered; Python 3 standard library was chosen because:
 
-1. **Runner ships the interpreter, no setup needed.** `ubuntu-latest` / `macos-latest` / `windows-latest` all preinstall `python3`; no `setup-node` or language toolchain install is required in the action step.
-2. **The standard library covers every need, zero third-party dependencies.** Signing uses `hmac` / `hashlib` / `base64`, body assembly uses `json`, requests use `urllib.request`; there is no `requirements.txt`, so there is no dependency supply-chain attack surface.
-3. **No compile step, no dist artifact, source is reviewable.** `notify.py` in this directory is the entire execution logic; in contrast, a TS action requires reviewing a compiled `dist/` bundle and a Go action requires downloading a prebuilt binary. The Python single file can be read end to end.
-4. **Consistent behavior across platforms.** The standard library behaves the same on all three runner images; there are no native dependencies or native build differences.
-5. **The Actions Toolkit is not needed.** This action does not wrap logging, caching, artifact uploads or similar capabilities; pulling in the Node toolchain yields no real benefit, and thin logic is expressed most directly with the standard library.
+1. **The runners ship the interpreter, no setup needed.** `ubuntu-latest` / `macos-latest` / `windows-latest` all preinstall `python3` — CI verifies this claim with a dry-run matrix on every push.
+2. **The standard library covers every need, zero third-party dependencies.** Signing uses `hmac` / `hashlib` / `base64`, body assembly uses `json`, requests use `urllib.request`; no `requirements.txt`, hence no dependency supply-chain surface.
+3. **No compile step, no dist artifact, source is reviewable.** `notify.py` is the whole execution logic.
+4. **Consistent across platforms.** No native dependencies, no native build differences.
+5. **The Actions Toolkit is not needed.** No logging wrapper, caching or artifact upload; pulling in the Node toolchain brings no benefit.
 
 ## Quick start
 
-### 1. Simple mode: Markdown card (common for CI notifications)
+### 1. Card (the usual CI notification)
 
 ```yaml
-- uses: xmyfun/feishu-webhook-action@v0.1.0
+- uses: xmyfun/feishu-webhook-action@v1
   with:
     webhooks: ${{ secrets.FEISHU_WEBHOOKS }}
+    webhook_secret: ${{ secrets.FEISHU_WEBHOOK_SECRET }}  # optional: default secret for every target
     title: "❌ YMK CI · backend"
     status: failure
     content: |
       **Failed job**: test
       **Ref**: ${{ github.ref_name }}
-  env:
-    # A single-target fallback is also supported:
-    # FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK }}
-    # FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
 ```
 
-`status` maps the card color automatically: `success` → green, `failure` → red, `cancelled` / `skipped` → grey. Use `template` to override the color directly.
+`status` maps the card colour: `success` → green, `failure` → red, `cancelled` / `skipped` → grey. Override with `template` (`blue` / `wathet` / `turquoise` / `green` / `yellow` / `orange` / `red` / `carmine` / `violet` / `purple` / `indigo` / `grey`).
 
-### 2. Plain text message
+### 2. Plain text
 
 ```yaml
-- uses: xmyfun/feishu-webhook-action@v0.1.0
+- uses: xmyfun/feishu-webhook-action@v1
   with:
-    webhook_url: ${{ secrets.FEISHU_WEBHOOK }}
+    webhook: ${{ secrets.FEISHU_WEBHOOK }}
     msg_type: text
     content: "Build finished: ${{ github.repository }}@${{ github.ref_name }}"
 ```
 
-### 3. Passthrough mode: complete card JSON
+In `text` mode `title` has no effect (by contract) and the body is not parsed as markdown.
 
-When you need buttons, multi-section layout or a custom color, assemble the complete `card` object yourself; the action only handles signing and transport:
+### 3. Complete card passthrough
+
+For buttons, multi-section layouts or custom colours, supply the complete `card` object; the action only signs and sends it:
 
 ```yaml
-- uses: xmyfun/feishu-webhook-action@v0.1.0
+- uses: xmyfun/feishu-webhook-action@v1
   with:
     webhooks: ${{ secrets.FEISHU_WEBHOOKS }}
-    card_json: |
+    card: |
       {
         "header": {
           "title": {"tag": "plain_text", "content": "Release finished"},
           "template": "green"
         },
         "elements": [
-          {"tag": "div", "text": {"tag": "lark_md", "content": "**Version**: 0.1.20"}},
+          {"tag": "div", "text": {"tag": "lark_md", "content": "**Version**: 1.0.0"}},
           {"tag": "action", "actions": [{
             "tag": "button",
             "text": {"tag": "plain_text", "content": "Open Release"},
@@ -76,79 +76,103 @@ When you need buttons, multi-section layout or a custom color, assemble the comp
           }]}
         ]
       }
+    include_context: "false"
 ```
 
-In passthrough mode, `title` / `content` / `msg_type` / `extra_elements` / `include_context` have no effect.
+With `card`, `title` / `template` / `extra_elements` must stay empty — supplying both fails the step instead of silently ignoring them; `include_context` is ignored with a warning.
 
 ### 4. Multi-target webhooks and signing
 
-Each target occupies one line in the secret:
+One target per line:
 
 ```text
 https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx
 https://open.feishu.cn/open-apis/bot/v2/hook/yyyyyyyy|per-target signing secret
 ```
 
-Bots without signature verification only need the URL; for a bot with signature verification, append its secret after `|`.
+`webhook_secret` is the default for every target; a per-line `|secret` overrides it. A `|` may appear in neither the URL nor the secret.
 
 ### 5. Debug: dry run
 
 ```yaml
-- uses: xmyfun/feishu-webhook-action@v0.1.0
+- uses: xmyfun/feishu-webhook-action@v1
   with:
-    webhook_url: ${{ secrets.FEISHU_WEBHOOK }}
+    webhook: ${{ secrets.FEISHU_WEBHOOK }}
     content: "Test message"
     dry_run: "true"
 ```
 
-The request body is printed to the logs only; nothing is actually sent.
+The request body is printed to the log only; nothing is sent. The same body is exposed as the `body` output for assertions.
 
-## Inputs
+## Inputs (frozen at v1)
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
-| `webhooks` | no | — | Multi-line targets, one `url` or `url\|secret` per line; takes precedence over `webhook_url` |
-| `webhook_url` | no | — | Single webhook URL, fallback when `webhooks` is empty |
-| `webhook_secret` | no | — | Single-target signing secret, paired with `webhook_url` |
-| `msg_type` | no | `markdown` | Simple mode: `text` / `markdown` |
-| `title` | no | — | Card title |
-| `content` | no | — | Simple-mode body (plain text or markdown) |
-| `card_json` | no | — | Passthrough mode: a complete card object as JSON |
-| `status` | no | — | `success` / `failure` / `cancelled` / `skipped`, mapped to the card color |
-| `template` | no | — | Card color directly, overriding the `status` mapping |
-| `include_context` | no | `true` | Whether the GitHub context is appended automatically in simple mode |
+| `webhooks` | no | — | Multi-line targets, one `url` or `url\|secret` per line; takes precedence over `webhook` |
+| `webhook` | no | — | Single webhook URL, fallback when `webhooks` is empty |
+| `webhook_secret` | no | — | Global default signing secret; per-line `url\|secret` overrides it |
+| `msg_type` | no | `interactive` | `interactive` (card) / `text` (plain text); `post` is not supported |
+| `title` | no | — | Card `header.title`; ignored in `text` mode and when `card` is given |
+| `content` | no | — | `interactive` → first `lark_md` block of the card; `text` → `content.text` |
+| `card` | no | — | Complete card object as JSON (only with `interactive`, and not together with `title` / `template` / `extra_elements`) |
+| `template` | no | from `status` | Card colour (`header.template`); invalid values fall back to `blue` with a warning |
+| `status` | no | — | `success` / `failure` / `cancelled` / `skipped`, mapped to the card colour |
+| `include_context` | no | `true` | Append the GitHub run context; ignored when `card` is given |
 | `extra_elements` | no | — | JSON array appended to the card elements (buttons, etc.) |
-| `dry_run` | no | `false` | Print the request body only, do not send |
-| `fail_on_error` | no | `false` | Whether the action exits non-zero when any target fails |
+| `timeout` | no | `15` | HTTP timeout per attempt, seconds |
+| `retries` | no | `0` | Extra attempts after a network error, 429 or 5xx (backoff 1s, 2s, …) |
+| `dry_run` | no | `false` | Print the body only; `body` output set, `sent` stays 0 |
+| `fail_on_error` | no | `false` | Fail the step when any target fails |
 
-## Outputs
+## Outputs (frozen at v1)
 
 | Output | Description |
 | --- | --- |
-| `status` | `success` / `failure` / `skipped` (no webhook configured) |
-| `sent` | Number of targets sent successfully |
-| `failed` | Number of targets that failed |
+| `result` | `success` (all targets sent, or dry_run / no webhook configured) / `failure` (at least one target failed) |
+| `sent` | Targets sent successfully (0 in dry_run and when skipped) |
+| `failed` | Targets that failed to send |
+| `body` | Request body JSON, only when `dry_run=true` |
 
-## Message types and roadmap
+## Behaviour contract (frozen at v1)
 
-Currently supported: `text` plain text, `interactive` card (simple markdown assembly or complete JSON passthrough).
+1. No webhook configured (`webhooks` and `webhook` both empty) → `result=skipped`, exit 0.
+2. A failed target does not fail the step unless `fail_on_error=true`; failures always surface as `::warning::`.
+3. Invalid input combinations (`msg_type` outside the supported list, `card` together with `title`/`template`/`extra_elements`, malformed `card` JSON, …) fail immediately with `::error::` — no silent downgrade.
+4. Card element order is fixed: `[content, context, extra_elements...]`.
+5. Request bodies over 20000 bytes: assembled cards truncate the longest `lark_md` block with a warning; a complete passed-through `card` fails instead.
+6. Titles longer than 40 characters are truncated with a warning.
+7. Signature: `sign = base64(HMAC-SHA256(key = timestamp + "\n" + secret, msg = ""))`; `timestamp` / `sign` go into the request body, not the URL. A golden vector in the unit tests locks this down.
 
-Planned for later releases:
+## Error codes
 
-- `post` rich text: paragraph-level text, hyperlinks, mentions, inline image layout.
-- `image` message: send an image by `image_key`.
-- `share_chat` group card.
-- Message card schema 2.0 structure support.
-- Optional retry and backoff on send failure.
+| code | Meaning | Look at |
+| --- | --- | --- |
+| `19001` | Invalid parameters | `msg` in the response; usually a `card` missing `header`/`elements` or a wrong `msg_type` |
+| `19021` | Signature mismatch | Wrong secret; machine clock off by more than one hour; key/message swapped in the sign formula |
+| `19024` | Keyword not matched | The bot has a custom keyword; the body must contain it |
+| `9499` | Rate limited | Per-bot frequency limit; slow down or split across bots |
+
+## Scope and non-goals
+
+Supported: `msg_type: text`, and `msg_type: interactive` (assembled card or complete `card` passthrough).
+
+Explicitly out of scope for v1:
+
+- `post` rich text, `image` messages, `share_chat` — different body shapes and rarely used.
+- `cardkit` card entities — they need app credentials and do not go through the custom-bot webhook.
+- Schema 2.0-only fields — pass a complete `card` for full control instead.
 
 ## Local development and testing
 
 ```bash
-# Syntax check
-python3 -m py_compile notify.py
+# Unit tests (standard-library unittest, zero dependencies)
+python3 -m unittest discover -s tests -v
 
-# Dry run: no request is issued; the assembled body is printed
-INPUT_WEBHOOK_URL="https://example.invalid/hook" \
+# Byte-compile check
+python3 -m compileall -q notify.py tests
+
+# Dry run: no request is issued, the assembled body is printed
+INPUT_WEBHOOK="https://example.invalid/hook" \
 INPUT_TITLE="Local test" \
 INPUT_CONTENT="**hello** markdown" \
 INPUT_STATUS="failure" \
@@ -161,7 +185,11 @@ GITHUB_RUN_ID="12345" \
 python3 notify.py
 ```
 
-The `.github/workflows/test.yml` workflow in this repository provides a `workflow_dispatch` dry-run self-check; it does not send messages to any real bot.
+`.github/workflows/test.yml` runs the unit tests on Python 3.10 and 3.14 plus a dry-run matrix of this action on `ubuntu` / `macos` / `windows` for every push and pull request; it never talks to a real bot.
+
+## Versioning
+
+The interface is frozen at `v1.0.0`: `v1` is a floating tag (picks up v1.x patches and new inputs), while `v1.0.0` pins behaviour exactly. Renames and semantic changes of inputs or outputs only happen in `v2`.
 
 ## License
 
