@@ -2,6 +2,8 @@
 
 English · [简体中文](README.zh-CN.md)
 
+[![Marketplace](https://img.shields.io/badge/GitHub_Marketplace-Feishu_Webhook-blue)](https://github.com/marketplace/actions/feishu-webhook) [![tests](https://img.shields.io/github/actions/workflow/status/xmyfun/feishu-webhook-action/test.yml?branch=main&label=tests)](https://github.com/xmyfun/feishu-webhook-action/actions/workflows/test.yml) [![Release](https://img.shields.io/github/v/release/xmyfun/feishu-webhook-action)](https://github.com/xmyfun/feishu-webhook-action/releases) [![License](https://img.shields.io/github/license/xmyfun/feishu-webhook-action)](LICENSE)
+
 > **中文简介**：通用飞书（Feishu / Lark）自定义机器人 GitHub Action —— 多目标 webhook、逐路加签、纯文本或交互卡片，零依赖、无构建步骤。完整中文文档见 [README.zh-CN.md](README.zh-CN.md)。
 
 Generic Feishu（飞书 / Lark）custom-bot GitHub Action: push one notification to one or more group bots, with per-target signing, plain text or interactive cards, and an optional GitHub run context.

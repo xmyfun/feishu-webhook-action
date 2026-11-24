@@ -2,6 +2,8 @@
 
 [English](README.md) · 简体中文
 
+[![Marketplace](https://img.shields.io/badge/GitHub_Marketplace-Feishu_Webhook-blue)](https://github.com/marketplace/actions/feishu-webhook) [![tests](https://img.shields.io/github/actions/workflow/status/xmyfun/feishu-webhook-action/test.yml?branch=main&label=tests)](https://github.com/xmyfun/feishu-webhook-action/actions/workflows/test.yml) [![Release](https://img.shields.io/github/v/release/xmyfun/feishu-webhook-action)](https://github.com/xmyfun/feishu-webhook-action/releases) [![License](https://img.shields.io/github/license/xmyfun/feishu-webhook-action)](LICENSE)
+
 通用飞书自定义机器人 GitHub Action：一条通知推到一个或多个群机器人，支持每路独立加签、纯文本或消息卡片，并可选附带 GitHub 运行上下文。
 
 - **多路 webhook**：一个 Secret 多行配置，每行一个机器人，逐路发送。
