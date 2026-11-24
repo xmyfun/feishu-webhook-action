@@ -1,8 +1,7 @@
 name: Feishu Webhook
 description: >-
-  Feishu（飞书）/ Lark custom-bot notifications for GitHub Actions: interactive cards
-  or plain text, signed webhooks, multi-target fan-out, zero dependencies, no build
-  step. Field names follow the Feishu custom-bot request body.
+  Feishu（飞书）/ Lark custom-bot notifications for GitHub Actions: cards, text,
+  signing, multi-target.
 
 branding:
   icon: bell
