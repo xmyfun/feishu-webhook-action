@@ -1,9 +1,8 @@
-name: feishu-webhook-action
+name: Feishu Webhook
 description: >-
-  Generic Feishu (Lark) custom-bot notification: multi-target webhooks, per-target
-  signing, text or interactive-card messages, with an optional GitHub run context.
-  Field names follow the Feishu custom-bot request body. Python 3 standard library,
-  zero dependencies, no build step.
+  Feishu（飞书）/ Lark custom-bot notifications for GitHub Actions: interactive cards
+  or plain text, signed webhooks, multi-target fan-out, zero dependencies, no build
+  step. Field names follow the Feishu custom-bot request body.
 
 branding:
   icon: bell

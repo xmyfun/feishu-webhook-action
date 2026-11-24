@@ -2,7 +2,9 @@
 
 English · [简体中文](README.zh-CN.md)
 
-Generic Feishu (Lark) custom-bot GitHub Action: push one notification to one or more group bots, with per-target signing, plain text or interactive cards, and an optional GitHub run context.
+> **中文简介**：通用飞书（Feishu / Lark）自定义机器人 GitHub Action —— 多目标 webhook、逐路加签、纯文本或交互卡片，零依赖、无构建步骤。完整中文文档见 [README.zh-CN.md](README.zh-CN.md)。
+
+Generic Feishu（飞书 / Lark）custom-bot GitHub Action: push one notification to one or more group bots, with per-target signing, plain text or interactive cards, and an optional GitHub run context.
 
 - **Multi-target webhooks**: one secret, one bot per line; each target is sent separately.
 - **Signing**: a global default secret plus per-line `url|secret` overrides; the algorithm follows the official Feishu spec.
