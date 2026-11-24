@@ -1,7 +1,5 @@
 name: Feishu Webhook
-description: >-
-  Feishu（飞书）/ Lark custom-bot notifications for GitHub Actions: cards, text,
-  signing, multi-target.
+description: 飞书（Feishu）/ Lark 群机器人 group bot webhook 通知 GitHub Actions：自定义机器人、加签、卡片、多群推送。
 
 branding:
   icon: bell
